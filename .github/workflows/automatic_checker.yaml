@@ -15,8 +15,5 @@ jobs:
       - name: Show current directory
         run: pwd
 
-      - name: Make script executable
-        run: chmod +x /home/github-runner/update_pipeline.sh
-
       - name: Run update script
-        run: /home/github-runner/update_pipeline.sh
+        run: bash /home/github-runner/update_pipeline.sh
