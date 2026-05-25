@@ -16,7 +16,7 @@ jobs:
         run: pwd
 
       - name: Make script executable
-        run: chmod +x /home/ubuntu-runner/update_pipeline.sh
+        run: chmod +x /home/github-runner/update_pipeline.sh
 
       - name: Run update script
-        run: /home/ubuntu-runner/update_pipeline.sh
+        run: /home/github-runner/update_pipeline.sh
