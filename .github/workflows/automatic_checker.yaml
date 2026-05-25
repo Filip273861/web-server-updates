@@ -5,12 +5,13 @@ on:
 
 jobs:
   run-script:
-    runs-on: [self-hosted, linux]
+    runs-on:
+      group: Default
+      labels: [self-hosted, linux, ubuntu-server-2404]
 
     defaults:
       run:
         shell: bash
-        working-directory: /home/ubuntu-runner
 
     steps:
       - name: Show current directory
