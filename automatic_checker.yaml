@@ -1,0 +1,23 @@
+name: Run update pipeline
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-script:
+    runs-on: [self-hosted, linux]
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: /home/ubuntu-runner
+
+    steps:
+      - name: Show current directory
+        run: pwd
+
+      - name: Make script executable
+        run: chmod +x /home/ubuntu-runner/update_pipeline.sh
+
+      - name: Run update script
+        run: /home/ubuntu-runner/update_pipeline.sh
