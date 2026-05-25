@@ -6,7 +6,6 @@ on:
 jobs:
   run-script:
     runs-on:
-      group: Default
       labels: [self-hosted, linux, ubuntu-server-2404]
 
     defaults:
