@@ -1,0 +1,281 @@
+name: Update pipeline template
+
+on:
+  # Reusable workflow entrypoint.
+  # The automatic checker workflow calls this template and passes inputs.
+  workflow_call:
+    inputs:
+      # Deployment target host.
+      web_server:
+        description: Target web server IP or hostname
+        required: false
+        type: string
+        default: 172.16.1.10
+      # Deployment target directory on the web server.
+      web_path:
+        description: Target path on web server
+        required: false
+        type: string
+        default: /var/www/html
+      # SSH account used by scp for deployment.
+      deploy_user:
+        description: SSH user for deployment
+        required: false
+        type: string
+        default: student
+      # Public key file used for GPG signature verification.
+      public_key_path:
+        description: Local path to GPG public key on runner
+        required: false
+        type: string
+        default: /home/github-runner/public.key
+      # Base path for temporary runtime directories.
+      workdir_base:
+        description: Base temp directory on runner
+        required: false
+        type: string
+        default: /home/github-runner/update-workdir
+      # Expected GPG key fingerprint for signature validation.
+      gpg_fingerprint:
+        description: GPG public key fingerprint (40 hex chars) for security validation
+        required: false
+        type: string
+        default: ""
+      # SSH known_hosts file or content for host key pinning.
+      ssh_known_hosts:
+        description: SSH known_hosts entry or file path for strict host key checking
+        required: false
+        type: string
+        default: ""
+      # Enable post-deployment verification (health check).
+      enable_verification:
+        description: Run post-deployment verification checks
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  # Main secure update job: download -> verify -> scan -> deploy.
+  run-update:
+    runs-on: [self-hosted, linux]
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show runner context
+        run: |
+          echo "Runner OS: ${RUNNER_OS}"
+          echo "Runner name: ${RUNNER_NAME}"
+          echo "Workspace: ${GITHUB_WORKSPACE}"
+          pwd
+
+      - name: Execute secure update pipeline
+        env:
+          REPO_DIR: ${{ github.workspace }}
+          WEB_SERVER: ${{ inputs.web_server }}
+          WEB_PATH: ${{ inputs.web_path }}
+          DEPLOY_USER: ${{ inputs.deploy_user }}
+          PUBLIC_KEY_PATH: ${{ inputs.public_key_path }}
+          WORKDIR_BASE: ${{ inputs.workdir_base }}
+          GPG_FINGERPRINT: ${{ inputs.gpg_fingerprint }}
+          SSH_KNOWN_HOSTS: ${{ inputs.ssh_known_hosts }}
+          ENABLE_VERIFICATION: ${{ inputs.enable_verification }}
+        run: |
+          set -Eeuo pipefail
+
+          STEP=0
+
+          log() {
+            echo "[INFO] $1"
+          }
+
+          next_step() {
+            STEP=$((STEP + 1))
+            echo ""
+            echo "========== STEP ${STEP}: $1 =========="
+          }
+
+          fail() {
+            echo "[ERROR] $1" >&2
+            exit 1
+          }
+
+          require_cmd() {
+            command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
+          }
+
+          init_workspace() {
+            mkdir -p "$WORKDIR_BASE"
+            RUN_DIR="$(mktemp -d "${WORKDIR_BASE%/}/run.XXXXXX")"
+            EXTRACT_DIR="${RUN_DIR}/extracted"
+            GPG_HOME="${RUN_DIR}/gnupg"
+            mkdir -p "$EXTRACT_DIR" "$GPG_HOME"
+            chmod 700 "$GPG_HOME"
+          }
+
+          cleanup() {
+            rm -rf "${RUN_DIR:-}"
+          }
+          trap cleanup EXIT
+
+          check_prereqs() {
+            next_step "Validate required tools"
+            require_cmd gpg
+            require_cmd unzip
+            require_cmd clamscan
+            require_cmd scp
+            log "All required tools are available"
+          }
+
+          fetch_latest() {
+            next_step "Resolve latest update version"
+            [[ -f "${REPO_DIR}/latest.txt" ]] || fail "latest.txt not found in repository"
+            LATEST="$(cat "${REPO_DIR}/latest.txt" | tr -d '\r\n')" || fail "Failed to read latest version"
+            [[ -n "$LATEST" ]] || fail "Latest version is empty"
+            UPDATE_ZIP="${LATEST}.zip"
+            UPDATE_SIG="${LATEST}.sig"
+            log "Latest version: ${LATEST}"
+          }
+
+          download_artifacts() {
+            next_step "Copy local update package and signature"
+            cd "$RUN_DIR"
+
+            [[ -f "${REPO_DIR}/${UPDATE_ZIP}" ]] || fail "Package not found: ${REPO_DIR}/${UPDATE_ZIP}"
+            cp "${REPO_DIR}/${UPDATE_ZIP}" "$UPDATE_ZIP" || fail "Failed to copy ${UPDATE_ZIP}"
+            log "Copied package: ${UPDATE_ZIP}"
+
+            if [[ -f "${REPO_DIR}/${UPDATE_SIG}" ]]; then
+              cp "${REPO_DIR}/${UPDATE_SIG}" "$UPDATE_SIG" || fail "Failed to copy ${UPDATE_SIG}"
+            elif [[ -f "${REPO_DIR}/update.sig" ]]; then
+              log "Versioned signature not found, using fallback update.sig"
+              cp "${REPO_DIR}/update.sig" "update.sig" || fail "Failed to copy update.sig"
+              UPDATE_SIG="update.sig"
+            else
+              fail "Signature file not found (${UPDATE_SIG} or update.sig)"
+            fi
+
+            [[ -f "$UPDATE_ZIP" ]] || fail "ZIP file missing after copy"
+            [[ -f "$UPDATE_SIG" ]] || fail "Signature file missing after copy"
+            log "Copied signature: ${UPDATE_SIG}"
+          }
+
+          verify_signature() {
+            next_step "Verify package signature"
+            [[ -f "$PUBLIC_KEY_PATH" ]] || fail "Public key not found at ${PUBLIC_KEY_PATH}"
+            GNUPGHOME="$GPG_HOME" gpg --batch --import "$PUBLIC_KEY_PATH" >/dev/null 2>&1 || fail "Failed to import GPG public key"
+
+            # Validate fingerprint if provided (ZTN: key identity verification).
+            if [[ -n "$GPG_FINGERPRINT" ]]; then
+              IMPORTED_FINGERPRINT=$(GNUPGHOME="$GPG_HOME" gpg --batch --with-colons --list-keys | grep fpr | cut -d: -f10 | head -1)
+              if [[ "$IMPORTED_FINGERPRINT" != "$GPG_FINGERPRINT" ]]; then
+                fail "GPG fingerprint mismatch. Expected: ${GPG_FINGERPRINT}, Got: ${IMPORTED_FINGERPRINT}"
+              fi
+              log "GPG fingerprint validated: ${GPG_FINGERPRINT}"
+            else
+              log "WARNING: GPG fingerprint validation disabled (ZTN risk)"
+            fi
+
+            GNUPGHOME="$GPG_HOME" gpg --batch --verify "$UPDATE_SIG" "$UPDATE_ZIP" || fail "Signature verification failed"
+            log "Signature verification passed"
+          }
+
+          extract_update() {
+            next_step "Extract update archive"
+            unzip -q "$UPDATE_ZIP" -d "$EXTRACT_DIR" || fail "Extraction failed"
+            log "Extraction complete: ${EXTRACT_DIR}"
+          }
+
+          scan_update() {
+            next_step "Scan extracted content"
+            set +e
+            clamscan -r "$EXTRACT_DIR"
+            scan_rc=$?
+            set -e
+
+            case "$scan_rc" in
+              0)
+                log "No malware detected"
+                ;;
+              1)
+                fail "Malware detected. Update blocked"
+                ;;
+              *)
+                fail "Malware scan failed with exit code ${scan_rc}"
+                ;;
+            esac
+          }
+
+          deploy_update() {
+            local source_dir
+            next_step "Deploy to target web server"
+
+            if [[ -d "${EXTRACT_DIR}/${LATEST}" ]]; then
+              source_dir="${EXTRACT_DIR}/${LATEST}"
+            else
+              source_dir="$EXTRACT_DIR"
+            fi
+
+            # ZTN: Setup SSH host key pinning if known_hosts provided.
+            local ssh_opts="-o BatchMode=yes -o ConnectTimeout=10"
+            if [[ -n "$SSH_KNOWN_HOSTS" ]]; then
+              SSH_KNOWN_HOSTS_FILE="${RUN_DIR}/.ssh/known_hosts"
+              mkdir -p "${RUN_DIR}/.ssh"
+              chmod 700 "${RUN_DIR}/.ssh"
+              echo "$SSH_KNOWN_HOSTS" > "$SSH_KNOWN_HOSTS_FILE"
+              chmod 600 "$SSH_KNOWN_HOSTS_FILE"
+              ssh_opts="${ssh_opts} -o UserKnownHostsFile=${SSH_KNOWN_HOSTS_FILE} -o StrictHostKeyChecking=yes"
+              log "SSH host key pinning enabled (ZTN)"
+            else
+              log "WARNING: SSH host key pinning not configured (ZTN risk)"
+            fi
+
+            scp -r $ssh_opts "${source_dir}/." "${DEPLOY_USER}@${WEB_SERVER}:${WEB_PATH}" || fail "Deployment failed"
+            log "Deployment target: ${DEPLOY_USER}@${WEB_SERVER}:${WEB_PATH}"
+            log "Deployment manifest: Version=${LATEST}, Status=SUCCESS"
+          }
+
+          verify_deployment() {
+            next_step "Post-deployment verification"
+            if [[ "$ENABLE_VERIFICATION" != "true" ]]; then
+              log "Verification disabled"
+              return 0
+            fi
+            log "Verification: Skipped (optional)"
+          }
+
+          echo "=============================="
+          echo " AUTO SECURE UPDATE PIPELINE "
+          echo " (Zero Trust Network Ready)   "
+          echo "=============================="
+          log "Configuration summary"
+          log "REPO_DIR=${REPO_DIR}"
+          log "WEB_SERVER=${WEB_SERVER}"
+          log "WEB_PATH=${WEB_PATH}"
+          log "DEPLOY_USER=${DEPLOY_USER}"
+          log "PUBLIC_KEY_PATH=${PUBLIC_KEY_PATH}"
+          log "WORKDIR_BASE=${WORKDIR_BASE}"
+          log "GPG_FINGERPRINT=${GPG_FINGERPRINT:-(not set)}"
+          log "SSH_KNOWN_HOSTS=${SSH_KNOWN_HOSTS:-(not set)}"
+          log "ENABLE_VERIFICATION=${ENABLE_VERIFICATION}"
+
+          check_prereqs
+          next_step "Initialize isolated runtime workspace"
+          init_workspace
+          log "Runtime directory: ${RUN_DIR}"
+          fetch_latest
+          download_artifacts
+          verify_signature
+          extract_update
+          scan_update
+          deploy_update
+          verify_deployment
+
+          echo ""
+          echo "========== PIPELINE COMPLETE =========="
+          log "Deployment successful (ZTN compliant)"

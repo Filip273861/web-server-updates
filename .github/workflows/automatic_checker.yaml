@@ -4,16 +4,14 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-script:
-    runs-on: [self-hosted, linux]
-
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-      - name: Show current directory
-        run: pwd
-
-      - name: Run update script
-        run: bash /home/github-runner/update_pipeline.sh
+  run-update:
+    uses: ./.github/workflows/update_pipeline_template.yml
+    with:
+      web_server: 172.16.1.10
+      web_path: /var/www/html
+      deploy_user: student
+      public_key_path: /home/github-runner/public.key
+      workdir_base: /home/github-runner/update-workdir
+      gpg_fingerprint: ""
+      ssh_known_hosts: ""
+      enable_verification: false
