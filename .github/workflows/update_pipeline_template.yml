@@ -43,7 +43,7 @@ on:
         default: ""
       # SSH known_hosts file or content for host key pinning.
       ssh_known_hosts:
-        description: SSH known_hosts entry or file path for strict host key checking
+        description: SSH known_hosts entry, file path, or empty to auto-discover the host key
         required: false
         type: string
         default: ""
@@ -107,6 +107,37 @@ jobs:
 
           require_cmd() {
             command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
+          }
+
+          write_known_hosts() {
+            local known_hosts_input="$1"
+            local known_hosts_file="$2"
+            local known_hosts_source=""
+
+            mkdir -p "$(dirname "$known_hosts_file")"
+            chmod 700 "$(dirname "$known_hosts_file")"
+
+            if [[ -n "$known_hosts_input" ]]; then
+              if [[ -f "$known_hosts_input" ]]; then
+                known_hosts_source="$known_hosts_input"
+              elif [[ -f "${REPO_DIR}/${known_hosts_input}" ]]; then
+                known_hosts_source="${REPO_DIR}/${known_hosts_input}"
+              fi
+            fi
+
+            if [[ -n "$known_hosts_source" ]]; then
+              cp "$known_hosts_source" "$known_hosts_file" || fail "Failed to copy known_hosts file: ${known_hosts_source}"
+              log "SSH host key pinning enabled from file: ${known_hosts_source}"
+            elif [[ -n "$known_hosts_input" ]]; then
+              printf '%s\n' "$known_hosts_input" > "$known_hosts_file" || fail "Failed to write known_hosts content"
+              log "SSH host key pinning enabled from inline content"
+            else
+              require_cmd ssh-keyscan
+              ssh-keyscan -H -T 5 "$WEB_SERVER" > "$known_hosts_file" || fail "Failed to auto-discover SSH host key for ${WEB_SERVER}"
+              log "SSH host key pinning auto-populated with ssh-keyscan (fallback)"
+            fi
+
+            chmod 600 "$known_hosts_file"
           }
 
           init_workspace() {
@@ -223,17 +254,9 @@ jobs:
 
             # ZTN: Setup SSH host key pinning if known_hosts provided.
             local ssh_opts="-o BatchMode=yes -o ConnectTimeout=10"
-            if [[ -n "$SSH_KNOWN_HOSTS" ]]; then
-              SSH_KNOWN_HOSTS_FILE="${RUN_DIR}/.ssh/known_hosts"
-              mkdir -p "${RUN_DIR}/.ssh"
-              chmod 700 "${RUN_DIR}/.ssh"
-              echo "$SSH_KNOWN_HOSTS" > "$SSH_KNOWN_HOSTS_FILE"
-              chmod 600 "$SSH_KNOWN_HOSTS_FILE"
-              ssh_opts="${ssh_opts} -o UserKnownHostsFile=${SSH_KNOWN_HOSTS_FILE} -o StrictHostKeyChecking=yes"
-              log "SSH host key pinning enabled (ZTN)"
-            else
-              log "WARNING: SSH host key pinning not configured (ZTN risk)"
-            fi
+            SSH_KNOWN_HOSTS_FILE="${RUN_DIR}/.ssh/known_hosts"
+            write_known_hosts "$SSH_KNOWN_HOSTS" "$SSH_KNOWN_HOSTS_FILE"
+            ssh_opts="${ssh_opts} -o UserKnownHostsFile=${SSH_KNOWN_HOSTS_FILE} -o StrictHostKeyChecking=yes"
 
             scp -r $ssh_opts "${source_dir}/." "${DEPLOY_USER}@${WEB_SERVER}:${WEB_PATH}" || fail "Deployment failed"
             log "Deployment target: ${DEPLOY_USER}@${WEB_SERVER}:${WEB_PATH}"
