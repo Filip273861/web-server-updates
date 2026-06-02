@@ -205,14 +205,14 @@ jobs:
             if [[ -n "$GPG_FINGERPRINT" ]]; then
               IMPORTED_FINGERPRINT=$(GNUPGHOME="$GPG_HOME" gpg --batch --with-colons --list-keys | grep fpr | cut -d: -f10 | head -1)
               if [[ "$IMPORTED_FINGERPRINT" != "$GPG_FINGERPRINT" ]]; then
-                fail "GPG fingerprint mismatch. Expected: ${GPG_FINGERPRINT}, Got: ${IMPORTED_FINGERPRINT}"
+                fail "GPG fingerprint mismatch"
               fi
-              log "GPG fingerprint validated: ${GPG_FINGERPRINT}"
+              log "GPG fingerprint validated"
             else
               log "WARNING: GPG fingerprint validation disabled (ZTN risk)"
             fi
 
-            GNUPGHOME="$GPG_HOME" gpg --batch --verify "$UPDATE_SIG" "$UPDATE_ZIP" || fail "Signature verification failed"
+            GNUPGHOME="$GPG_HOME" gpg --batch --no-tty --quiet --verify "$UPDATE_SIG" "$UPDATE_ZIP" >/dev/null 2>&1 || fail "Signature verification failed"
             log "Signature verification passed"
           }
 
@@ -283,7 +283,11 @@ jobs:
           log "DEPLOY_USER=${DEPLOY_USER}"
           log "PUBLIC_KEY_PATH=${PUBLIC_KEY_PATH}"
           log "WORKDIR_BASE=${WORKDIR_BASE}"
-          log "GPG_FINGERPRINT=${GPG_FINGERPRINT:-(not set)}"
+          if [[ -n "$GPG_FINGERPRINT" ]]; then
+            log "GPG_FINGERPRINT=set"
+          else
+            log "GPG_FINGERPRINT=not set"
+          fi
           log "SSH_KNOWN_HOSTS=${SSH_KNOWN_HOSTS:-(not set)}"
           log "ENABLE_VERIFICATION=${ENABLE_VERIFICATION}"
 
